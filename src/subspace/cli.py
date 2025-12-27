@@ -10,11 +10,19 @@ from pathlib import Path
 from subspace import __version__, debug
 
 
-CODEX_INTEGRATION_MARKER = "## Subspace Subagent System"
+CODEX_INTEGRATION_MARKER = "## Subspace Agent Tools"
 CODEX_INTEGRATION_CONTENT = '''
+## Subspace Agent Tools
+
+You have access to the Subspace CLI (`subspace`) which provides two powerful capabilities:
+1. **Subagents** - Run specialized agents in isolated sessions
+2. **Slash Commands** - Execute predefined prompts/workflows programmatically
+
+---
+
 ## Subspace Subagent System
 
-You have access to specialized subagents via the `subspace subagent` CLI. Subagents run in isolated Codex sessions with their own context, preventing context window bloat.
+Subagents run in isolated Codex sessions with their own context, preventing context window bloat.
 
 ### Recognizing Subagent Requests
 
@@ -24,7 +32,7 @@ When users reference `@agent-{name}` in their input, they want you to dispatch t
 - `@agent-coder` → Run coder subagent
 - `@agent-web-search-researcher` → Run web-search-researcher subagent
 
-### Available Commands
+### Subagent Commands
 
 ```bash
 # List all available subagents
@@ -48,7 +56,7 @@ Use subagents when:
 - You want to isolate complex work from the main context
 - Running parallel independent tasks
 
-### Example Usage
+### Subagent Example Usage
 
 ```bash
 # User says: "Use @agent-tdd-agent to write tests for the auth module"
@@ -56,22 +64,106 @@ subspace subagent run tdd-agent "Write comprehensive tests for the auth module"
 
 # User says: "Have @agent-coder implement this and @agent-tdd-agent write tests"
 subspace subagent parallel coder:"Implement the user profile feature" tdd-agent:"Write tests for user profile"
-
-# Check what agents are available
-subspace subagent list
 ```
 
-### Output Handling
+---
 
-- **Text mode** (default): Returns the final agent response
-- **JSONL mode** (`--output jsonl`): Streams events for UI integration
+## Subspace Slash Command System
 
-### Important Notes
+Slash commands are predefined prompts stored as markdown files that you can retrieve and execute programmatically. This enables:
+- **Nested workflows**: Meta-prompts that reference other commands
+- **Reusable procedures**: Standard operating procedures as executable prompts
+- **Dynamic pipelines**: Users can chain commands like "run /quick_tasks then /execute_sync"
+
+### Recognizing Slash Command Requests
+
+When users reference `/{command-name}` in their task, they want you to execute that command:
+
+- `/quick_tasks` → Retrieve and execute the quick_tasks prompt
+- `/execute_sync` → Retrieve and execute the execute_sync prompt
+- `/validate` → Retrieve and execute the validate prompt
+
+### Slash Command CLI
+
+```bash
+# Get the full prompt text for a command (primary use case)
+subspace command get /command-name [arg1] [arg2] ...
+
+# List all available commands
+subspace command list
+
+# Show command details and metadata
+subspace command show /command-name
+```
+
+### How to Execute Slash Commands
+
+When a user asks you to run slash commands, follow this workflow:
+
+1. **Retrieve the prompt**: Use `subspace command get /command-name` to get the full prompt text
+2. **Execute the instructions**: Follow the prompt instructions as if the user gave them directly
+3. **Handle nested commands**: If the prompt references other `/commands`, retrieve and execute those too
+4. **Continue the pipeline**: Move to the next command when done
+
+### Slash Command Example Usage
+
+```bash
+# User says: "run /quick_tasks and then /execute_sync. When done, run /validate"
+
+# Step 1: Get and execute the first command
+subspace command get /quick_tasks
+# (Follow the returned prompt instructions)
+
+# Step 2: Get and execute the second command
+subspace command get /execute_sync
+# (Follow the returned prompt instructions - may contain nested /commands)
+
+# Step 3: Get and execute the final command
+subspace command get /validate
+# (Follow the returned prompt instructions)
+```
+
+### Command Arguments
+
+Commands can accept positional arguments. Use `$1`, `$2`, etc. in your command files:
+
+```bash
+# If /deploy command contains: "Deploy $1 to $2 environment"
+subspace command get /deploy backend production
+# Returns: "Deploy backend to production environment"
+```
+
+### Nested Commands (Meta-Prompts)
+
+A command prompt can reference other commands. When you see `/other-command` in a prompt:
+1. First complete any instructions before the nested command reference
+2. Retrieve the nested command with `subspace command get /other-command`
+3. Execute those instructions
+4. Continue with any remaining instructions from the parent prompt
+
+### Command Discovery
+
+Commands are discovered from (in priority order):
+1. Project-level `./.claude/commands/`
+2. Project-level `./.codex/commands/`
+3. User-level `~/.claude/commands/`
+4. User-level `~/.codex/commands/`
+
+---
+
+## Output Handling
+
+- **Text mode** (default): Returns human-readable output
+- **JSON mode** (`--output json`): Returns structured JSON for programmatic use
+- **JSONL mode** (`--output jsonl`): Streams events for UI integration (subagent only)
+
+## Important Notes
 
 - Subagents run in `workspace-write` sandbox mode for security
 - Each subagent has fresh context (no access to this conversation)
 - Provide complete, self-contained task descriptions
 - Review subagent output before integrating changes
+- Slash commands return prompt text that YOU execute - they don't run automatically
 '''
 
 
@@ -290,6 +382,166 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+# =============================================================================
+# Slash Command Handlers
+# =============================================================================
+
+
+def cmd_command_get(args: argparse.Namespace) -> int:
+    """Get the full prompt text for a slash command.
+
+    This is the primary interface for agents to retrieve executable prompts.
+    """
+    from subspace.core.commands import (
+        CommandSource,
+        find_command,
+        get_command_sources,
+        interpolate_arguments,
+        load_command_prompt,
+        validate_command_name,
+    )
+
+    command_name = args.command
+    command_args = args.args if args.args else []
+
+    # Validate command name
+    try:
+        clean_name = validate_command_name(command_name)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    # Get command sources (respects --commands-dir override)
+    if args.commands_dir:
+        sources = [CommandSource("override", Path(args.commands_dir).expanduser(), "override", 0)]
+    else:
+        sources = get_command_sources()
+
+    result = find_command(command_name, sources)
+    if not result:
+        print(f"Error: Command '/{clean_name}' not found", file=sys.stderr)
+        return 1
+
+    command_path, source = result
+    debug(f"Found command: {command_path} from {source.name}")
+
+    # Load and optionally interpolate the prompt
+    prompt = load_command_prompt(command_path)
+
+    if command_args:
+        prompt = interpolate_arguments(prompt, command_args)
+
+    if args.output == "json":
+        import json
+        print(json.dumps({
+            "command": f"/{clean_name}",
+            "path": str(command_path),
+            "source": source.name,
+            "args": command_args,
+            "prompt": prompt,
+        }, indent=2))
+    else:
+        # Raw prompt output - ready for agent execution
+        print(prompt)
+
+    return 0
+
+
+def cmd_command_list(args: argparse.Namespace) -> int:
+    """List available slash commands."""
+    from subspace.core.commands import CommandSource, get_command_sources, list_all_commands
+
+    # Get command sources (respects --commands-dir override)
+    if args.commands_dir:
+        sources = [CommandSource("override", Path(args.commands_dir).expanduser(), "override", 0)]
+    else:
+        sources = get_command_sources()
+
+    commands = list_all_commands(sources)
+
+    if not commands:
+        print("No commands found", file=sys.stderr)
+        print("\nCommands are discovered from:", file=sys.stderr)
+        print("  - ./.claude/commands/", file=sys.stderr)
+        print("  - ./.codex/commands/", file=sys.stderr)
+        print("  - ~/.claude/commands/", file=sys.stderr)
+        print("  - ~/.codex/commands/", file=sys.stderr)
+        return 1
+
+    if args.output == "json":
+        import json
+        print(json.dumps(commands, indent=2))
+    else:
+        # Table format: NAME, SOURCE, DESCRIPTION
+        print(f"{'COMMAND':<25} {'SOURCE':<20} {'DESCRIPTION'}")
+        print("-" * 80)
+        for cmd in commands:
+            desc = cmd.get("description", "")
+            if len(desc) > 30:
+                desc = desc[:27] + "..."
+            print(f"{cmd['name']:<25} {cmd['source_type']:<20} {desc}")
+
+    return 0
+
+
+def cmd_command_show(args: argparse.Namespace) -> int:
+    """Show details of a specific slash command."""
+    from subspace.core.commands import (
+        CommandSource,
+        find_command,
+        get_command_sources,
+        load_command_details,
+        validate_command_name,
+    )
+
+    command_name = args.command
+
+    # Validate command name
+    try:
+        clean_name = validate_command_name(command_name)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    # Get command sources (respects --commands-dir override)
+    if args.commands_dir:
+        sources = [CommandSource("override", Path(args.commands_dir).expanduser(), "override", 0)]
+    else:
+        sources = get_command_sources()
+
+    result = find_command(command_name, sources)
+    if not result:
+        print(f"Error: Command '/{clean_name}' not found", file=sys.stderr)
+        return 1
+
+    command_path, source = result
+    details = load_command_details(command_path, source)
+
+    if args.output == "json":
+        import json
+        print(json.dumps(details, indent=2))
+    else:
+        print(f"Command: {details['name']}")
+        print(f"Source: {details['source']} ({details['source_type']})")
+        print(f"Path: {details['path']}")
+        print()
+        if details.get("frontmatter"):
+            print("Frontmatter:")
+            for k, v in details["frontmatter"].items():
+                print(f"  {k}: {v}")
+            print()
+        print("Prompt:")
+        print("-" * 40)
+        # Show first 50 lines
+        lines = details.get("body", "").strip().split("\n")
+        preview = "\n".join(lines[:50])
+        print(preview)
+        if len(lines) > 50:
+            print(f"\n... ({len(lines) - 50} more lines)")
+
+    return 0
+
+
 def main() -> int:
     """Main entry point for subspace CLI."""
     parser = argparse.ArgumentParser(
@@ -429,6 +681,101 @@ def main() -> int:
         help="Override: use single directory instead of discovery",
     )
     show_parser.set_defaults(func=cmd_show)
+
+    # =========================================================================
+    # subspace command ...
+    # =========================================================================
+    command_parser = subparsers.add_parser(
+        "command",
+        help="Retrieve and manage slash commands",
+        description="Retrieve slash command prompts for programmatic execution by agents",
+    )
+    command_sub = command_parser.add_subparsers(
+        dest="command_subcommand",
+        required=True,
+    )
+
+    # subspace command get /name [args...]
+    cmd_get_parser = command_sub.add_parser(
+        "get",
+        help="Get the full prompt text for a command",
+        description="Retrieve the prompt text for a slash command. This is the primary interface for agents.",
+    )
+    cmd_get_parser.add_argument(
+        "command",
+        help="Command name (e.g., /quick_tasks or quick_tasks)",
+    )
+    cmd_get_parser.add_argument(
+        "args",
+        nargs="*",
+        help="Optional arguments to interpolate ($1, $2, etc.)",
+    )
+    cmd_get_parser.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text for raw prompt)",
+    )
+    cmd_get_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug output",
+    )
+    cmd_get_parser.add_argument(
+        "--commands-dir",
+        help="Override: use single directory instead of discovery",
+    )
+    cmd_get_parser.set_defaults(func=cmd_command_get)
+
+    # subspace command list
+    cmd_list_parser = command_sub.add_parser(
+        "list",
+        help="List available commands",
+        description="List all discovered slash commands with their sources",
+    )
+    cmd_list_parser.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
+    cmd_list_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug output",
+    )
+    cmd_list_parser.add_argument(
+        "--commands-dir",
+        help="Override: use single directory instead of discovery",
+    )
+    cmd_list_parser.set_defaults(func=cmd_command_list)
+
+    # subspace command show /name
+    cmd_show_parser = command_sub.add_parser(
+        "show",
+        help="Show command details",
+        description="Show details of a specific slash command including metadata",
+    )
+    cmd_show_parser.add_argument(
+        "command",
+        help="Command name (e.g., /quick_tasks or quick_tasks)",
+    )
+    cmd_show_parser.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
+    cmd_show_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug output",
+    )
+    cmd_show_parser.add_argument(
+        "--commands-dir",
+        help="Override: use single directory instead of discovery",
+    )
+    cmd_show_parser.set_defaults(func=cmd_command_show)
 
     # Parse and execute
     args = parser.parse_args()
