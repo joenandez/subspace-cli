@@ -114,6 +114,11 @@ def setup_codex_home() -> Path:
     if _safe_copy_file(auth_src, workspace_home / "auth.json"):
         debug(f"Synced auth.json to {workspace_home}")
 
+    # Copy AGENTS.md (subspace CLI instructions for slash commands, subagents)
+    agents_src = user_codex_home / "AGENTS.md"
+    if _safe_copy_file(agents_src, workspace_home / "AGENTS.md"):
+        debug(f"Synced AGENTS.md to {workspace_home}")
+
     return workspace_home.absolute()
 
 

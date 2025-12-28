@@ -69,6 +69,39 @@ class TestValidateCommandName:
         with pytest.raises(ValueError, match="must contain only"):
             validate_command_name("command with spaces")
 
+    def test_valid_namespaced_command(self):
+        """Namespaced commands (namespace:command) should be valid."""
+        from subspace.core.commands import validate_command_name
+
+        assert validate_command_name("subspace:sweep") == "subspace:sweep"
+        assert validate_command_name("/subspace:sweep") == "subspace:sweep"
+        assert validate_command_name("my-namespace:my-command") == "my-namespace:my-command"
+
+    def test_invalid_namespaced_command(self):
+        """Invalid namespaced commands should raise ValueError."""
+        from subspace.core.commands import validate_command_name
+
+        # Multiple colons
+        with pytest.raises(ValueError):
+            validate_command_name("a:b:c")
+
+        # Empty namespace or command
+        with pytest.raises(ValueError):
+            validate_command_name(":command")
+
+        with pytest.raises(ValueError):
+            validate_command_name("namespace:")
+
+    def test_namespaced_command_no_leading_hyphen(self):
+        """Namespaced command parts cannot start with hyphen."""
+        from subspace.core.commands import validate_command_name
+
+        with pytest.raises(ValueError, match="cannot start with hyphen"):
+            validate_command_name("-namespace:command")
+
+        with pytest.raises(ValueError, match="cannot start with hyphen"):
+            validate_command_name("namespace:-command")
+
 
 class TestParseFrontmatter:
     """Tests for YAML frontmatter parsing."""
@@ -260,6 +293,41 @@ class TestCommandDiscovery:
             path, source = result
             assert source.name == "project"  # Higher priority (lower number)
 
+    def test_find_namespaced_command(self):
+        """Should find namespaced command in subdirectory."""
+        from subspace.core.commands import CommandSource, find_command
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            commands_dir = Path(tmpdir) / ".claude" / "commands"
+            namespace_dir = commands_dir / "subspace"
+            namespace_dir.mkdir(parents=True)
+            (namespace_dir / "sweep.md").write_text("Sweep command content")
+
+            sources = [CommandSource("test", commands_dir, "project", 1)]
+            result = find_command("subspace:sweep", sources)
+
+            assert result is not None
+            path, source = result
+            assert path.name == "sweep.md"
+            assert path.parent.name == "subspace"
+
+    def test_find_namespaced_command_with_slash(self):
+        """Should find namespaced command with leading slash."""
+        from subspace.core.commands import CommandSource, find_command
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            commands_dir = Path(tmpdir) / ".claude" / "commands"
+            namespace_dir = commands_dir / "myns"
+            namespace_dir.mkdir(parents=True)
+            (namespace_dir / "cmd.md").write_text("Content")
+
+            sources = [CommandSource("test", commands_dir, "project", 1)]
+            result = find_command("/myns:cmd", sources)
+
+            assert result is not None
+            path, _ = result
+            assert path.name == "cmd.md"
+
 
 class TestListAllCommands:
     """Tests for listing all commands."""
@@ -315,6 +383,32 @@ Body 1
             assert len(deploy_commands) == 1
             assert deploy_commands[0]["source"] == "project"
 
+    def test_list_includes_namespaced_commands(self):
+        """Should list commands from namespace subdirectories."""
+        from subspace.core.commands import CommandSource, list_all_commands
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            commands_dir = Path(tmpdir) / ".claude" / "commands"
+            commands_dir.mkdir(parents=True)
+
+            # Top-level command
+            (commands_dir / "deploy.md").write_text("Deploy")
+
+            # Namespaced commands
+            namespace_dir = commands_dir / "subspace"
+            namespace_dir.mkdir()
+            (namespace_dir / "sweep.md").write_text("Sweep")
+            (namespace_dir / "clean.md").write_text("Clean")
+
+            sources = [CommandSource("test", commands_dir, "project", 1)]
+            commands = list_all_commands(sources)
+
+            names = [c["name"] for c in commands]
+            assert "/deploy" in names
+            assert "/subspace:sweep" in names
+            assert "/subspace:clean" in names
+            assert len(commands) == 3
+
 
 class TestLoadCommandPrompt:
     """Tests for loading command prompt text."""
@@ -359,9 +453,9 @@ class TestCommandSources:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             claude_commands = project_root / ".claude" / "commands"
-            codex_commands = project_root / ".codex" / "commands"
+            codex_prompts = project_root / ".codex" / "prompts"
             claude_commands.mkdir(parents=True)
-            codex_commands.mkdir(parents=True)
+            codex_prompts.mkdir(parents=True)
 
             # Change to project directory
             old_cwd = os.getcwd()

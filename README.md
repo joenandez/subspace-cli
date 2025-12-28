@@ -151,9 +151,9 @@ subspace command list --output json
 Commands are discovered from multiple sources in priority order:
 
 1. Project-level `./.claude/commands/`
-2. Project-level `./.codex/commands/`
+2. Project-level `./.codex/prompts/`
 3. User-level `~/.claude/commands/`
-4. User-level `~/.codex/commands/`
+4. User-level `~/.codex/prompts/`
 
 Override with `--commands-dir`:
 

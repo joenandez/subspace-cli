@@ -26,11 +26,12 @@ Subagents run in isolated Codex sessions with their own context, preventing cont
 
 ### Recognizing Subagent Requests
 
-When users reference `@agent-{name}` in their input, they want you to dispatch that subagent:
+When users reference `@agent-{name}` or `@{name}` (where @{name} doesn't include a file path) in their input, they want you to dispatch that subagent:
 
 - `@agent-tdd-agent` → Run tdd-agent subagent
 - `@agent-coder` → Run coder subagent
-- `@agent-web-search-researcher` → Run web-search-researcher subagent
+- `@web-search-researcher` → Run web-search-researcher subagent
+- `@test-lead` -> Run test-lead subagent
 
 ### Subagent Commands
 
@@ -70,10 +71,13 @@ subspace subagent parallel coder:"Implement the user profile feature" tdd-agent:
 
 ## Subspace Slash Command System
 
-Slash commands are predefined prompts stored as markdown files that you can retrieve and execute programmatically. This enables:
+Slash commands are predefined prompts stored as markdown files that you can retrieve and execute programmatically. Unlike standard prompts or slash commands which run at the beginning of an exchange and immediately expand to the prompt text, the Subspace Slash Command system allows you to run slash commands programatically.
+
+This enables:
+
 - **Nested workflows**: Meta-prompts that reference other commands
 - **Reusable procedures**: Standard operating procedures as executable prompts
-- **Dynamic pipelines**: Users can chain commands like "run /quick_tasks then /execute_sync"
+- **Dynamic pipelines**: Users can chain commands like "run /quick_tasks then /execute_sync then /validate then /create_PR"
 
 ### Recognizing Slash Command Requests
 
@@ -82,6 +86,13 @@ When users reference `/{command-name}` in their task, they want you to execute t
 - `/quick_tasks` → Retrieve and execute the quick_tasks prompt
 - `/execute_sync` → Retrieve and execute the execute_sync prompt
 - `/validate` → Retrieve and execute the validate prompt
+
+Slash commands can be namespaced as well, typically when users nest commands in directories. 
+
+- `/test:update_unit_tests`
+- `/flow:workflow_v4`
+
+Consider these namespaces part of the command name.
 
 ### Slash Command CLI
 
@@ -101,9 +112,11 @@ subspace command show /command-name
 When a user asks you to run slash commands, follow this workflow:
 
 1. **Retrieve the prompt**: Use `subspace command get /command-name` to get the full prompt text
-2. **Execute the instructions**: Follow the prompt instructions as if the user gave them directly
+2. **Execute the instructions literally**: The prompt text contains direct instructions—execute them exactly as written. Do NOT summarize, paraphrase, or just acknowledge the command. If the prompt says "output X", you must output X. If it says "create file Y", create that file. Treat each prompt as a user directive you must fulfill, not a task to describe.
 3. **Handle nested commands**: If the prompt references other `/commands`, retrieve and execute those too
 4. **Continue the pipeline**: Move to the next command when done
+
+**IMPORTANT**: Slash command prompts are instructions, not descriptions. Execute them fully before moving on.
 
 ### Slash Command Example Usage
 
@@ -145,9 +158,9 @@ A command prompt can reference other commands. When you see `/other-command` in 
 
 Commands are discovered from (in priority order):
 1. Project-level `./.claude/commands/`
-2. Project-level `./.codex/commands/`
+2. Project-level `./.codex/prompts/`
 3. User-level `~/.claude/commands/`
-4. User-level `~/.codex/commands/`
+4. User-level `~/.codex/prompts/`
 
 ---
 
@@ -463,9 +476,9 @@ def cmd_command_list(args: argparse.Namespace) -> int:
         print("No commands found", file=sys.stderr)
         print("\nCommands are discovered from:", file=sys.stderr)
         print("  - ./.claude/commands/", file=sys.stderr)
-        print("  - ./.codex/commands/", file=sys.stderr)
+        print("  - ./.codex/prompts/", file=sys.stderr)
         print("  - ~/.claude/commands/", file=sys.stderr)
-        print("  - ~/.codex/commands/", file=sys.stderr)
+        print("  - ~/.codex/prompts/", file=sys.stderr)
         return 1
 
     if args.output == "json":
