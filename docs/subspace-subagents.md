@@ -1,14 +1,21 @@
-# Subspace Subagents
+# Subspace CLI
 
-Run OpenAI Codex CLI subagents using Claude Code agent definition files.
+Run OpenAI Codex CLI subagents and slash commands programmatically.
 
 ## Overview
 
-Subspace subagents allow you to run specialized AI agents via OpenAI's Codex CLI while reusing your existing Claude Code agent configurations. This provides:
+Subspace provides two powerful capabilities for AI-assisted development:
+
+1. **Subagents** - Run specialized AI agents in isolated Codex sessions
+2. **Slash Commands** - Execute predefined prompts/workflows programmatically
+
+This provides:
 
 - **Agent reusability**: Same agent definitions work across Claude Code and Codex
-- **Multi-source discovery**: Agents from project, user, and plugin directories
+- **Multi-source discovery**: Agents and commands from project, user, and plugin directories
 - **Parallel execution**: Run multiple agents concurrently with true parallelism
+- **Slash command pipelines**: Chain commands like `/quick_tasks` then `/execute_sync`
+- **Namespaced commands**: Organize commands in subdirectories (e.g., `/subspace:sweep`)
 - **JSONL streaming**: Real-time event streaming for UI integration
 - **Sandbox isolation**: Subagents run in `workspace-write` sandbox mode
 - **Context isolation**: Each subagent runs in its own session
@@ -69,7 +76,9 @@ subspace setup
 
 Installs Subspace integration into `~/.codex/AGENTS.md` so Codex CLI can:
 - Recognize `@agent-{name}` syntax in user input
+- Recognize `/{command-name}` syntax for slash commands
 - Know how to dispatch subagents via `subspace subagent run/parallel`
+- Know how to retrieve and execute slash commands via `subspace command get`
 - Understand when to use subagents vs. handling work directly
 
 **Features:**
@@ -82,7 +91,7 @@ Installs Subspace integration into `~/.codex/AGENTS.md` so Codex CLI can:
 ```
 ✓ Subspace integration already installed in /Users/joe/.codex/AGENTS.md
 
-To reinstall, first remove the '## Subspace Subagent System' section.
+To reinstall, first remove the '## Subspace Agent Tools' section.
 ```
 
 ---
@@ -262,6 +271,209 @@ You are a senior engineer optimizing for speed with quality...
 
 ---
 
+## Slash Commands
+
+Slash commands are predefined prompts stored as markdown files that agents can retrieve and execute programmatically. This enables:
+
+- **Nested workflows**: Meta-prompts that reference other commands
+- **Reusable procedures**: Standard operating procedures as executable prompts
+- **Dynamic pipelines**: Chain commands like "run /quick_tasks then /execute_sync"
+- **Namespaced organization**: Group related commands (e.g., `/subspace:sweep`)
+
+### Get a command prompt
+
+```bash
+subspace command get /command-name [args...]
+```
+
+This is the primary interface for retrieving executable prompts.
+
+**Basic usage:**
+```bash
+subspace command get /quick_tasks
+```
+
+**Namespaced command:**
+```bash
+subspace command get /subspace:sweep
+```
+
+**With argument interpolation:**
+```bash
+# If command contains "Deploy $1 to $2 environment"
+subspace command get /deploy backend production
+# Returns: "Deploy backend to production environment"
+```
+
+**JSON output:**
+```bash
+subspace command get /subspace:sweep --output json
+```
+
+```json
+{
+  "command": "/subspace:sweep",
+  "path": "/Users/joe/.claude/commands/subspace/sweep.md",
+  "source": "claude_user",
+  "args": [],
+  "prompt": "## Pre-Commit Cleanup\n\nYou are preparing..."
+}
+```
+
+---
+
+### List available commands
+
+```bash
+subspace command list
+```
+
+**Output:**
+```
+COMMAND                   SOURCE               DESCRIPTION
+--------------------------------------------------------------------------------
+/bug_hunt                 user
+/subspace:analyze_logs    user                 Analyze logs for root cause...
+/subspace:clean           user                 Complete cleanup flow - cle...
+/subspace:execute_sync    user                 Sequential Build -> Code_Re...
+/subspace:quick_tasks     user                 Fast task breakdown from cu...
+/subspace:sweep           user                 Light pass clean up flow...
+```
+
+**JSON output:**
+```bash
+subspace command list --output json
+```
+
+---
+
+### Show command details
+
+```bash
+subspace command show /command-name
+```
+
+**Example:**
+```bash
+subspace command show /subspace:sweep
+```
+
+**Output:**
+```
+Command: /subspace:sweep
+Source: claude_user (user)
+Path: /Users/joe/.claude/commands/subspace/sweep.md
+
+Frontmatter:
+  description: Light pass clean up flow post feature dev/quick fix
+
+Prompt:
+----------------------------------------
+## Pre-Commit Cleanup
+
+You are preparing recently committed or uncommitted changes...
+```
+
+---
+
+### Command Discovery
+
+Commands are discovered from multiple sources in priority order (first match wins):
+
+| Priority | Source | Path | Type |
+|----------|--------|------|------|
+| 1 | Project Claude | `./.claude/commands/` | project |
+| 2 | Project Codex | `./.codex/prompts/` | project |
+| 3 | User Claude | `~/.claude/commands/` | user |
+| 4 | User Codex | `~/.codex/prompts/` | user |
+
+**Override discovery:**
+```bash
+subspace command list --commands-dir ~/.claude/commands
+```
+
+---
+
+### Namespaced Commands
+
+Commands can be organized in subdirectories. The subdirectory becomes the namespace:
+
+```
+~/.claude/commands/
+├── deploy.md              → /deploy
+└── subspace/
+    ├── sweep.md           → /subspace:sweep
+    ├── clean.md           → /subspace:clean
+    └── quick_tasks.md     → /subspace:quick_tasks
+```
+
+**Usage:**
+```bash
+subspace command get /subspace:sweep
+subspace command get /subspace:quick_tasks
+```
+
+---
+
+### Argument Interpolation
+
+Commands can accept positional arguments using `$1`, `$2`, etc.:
+
+**Command file (`deploy.md`):**
+```markdown
+---
+description: Deploy a service to an environment
+---
+
+Deploy $1 to $2 environment.
+
+1. Build the $1 service
+2. Run tests
+3. Deploy to $2
+```
+
+**Usage:**
+```bash
+subspace command get /deploy backend staging
+# Returns prompt with $1=backend, $2=staging
+```
+
+**Special variables:**
+- `$1`, `$2`, ... - Positional arguments
+- `$@` - All arguments joined by space
+
+---
+
+### Command File Format
+
+```markdown
+---
+description: Brief description for listing
+---
+
+## Command Instructions
+
+Your prompt text here. This is what the agent will execute.
+
+1. First step
+2. Second step
+3. Final step
+```
+
+The frontmatter is optional. The `description` field is shown in `subspace command list`.
+
+---
+
+### Command Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output` | `text` | Output format: `text` or `json` |
+| `--debug` | false | Show detailed execution trace |
+| `--commands-dir` | (discovery) | Override: use single directory |
+
+---
+
 ## Options
 
 ### Run Command Options
@@ -351,26 +563,27 @@ Each event tagged with agent identity:
 ┌─────────────────────────────────────────────────────────────┐
 │                     subspace CLI                            │
 │  subspace subagent {run, parallel, list, show}              │
+│  subspace command {get, list, show}                         │
 └─────────────────────┬───────────────────────────────────────┘
                       │
-        ┌─────────────┴─────────────┐
-        ▼                           ▼
-┌───────────────────┐     ┌───────────────────┐
-│  core/discovery   │     │   core/runner     │
-│                   │     │                   │
-│ • Multi-source    │     │ • Sandbox setup   │
-│ • Priority order  │     │ • Credential sync │
-│ • Plugin parsing  │     │ • Codex execution │
-│ • Frontmatter     │     │ • JSONL streaming │
-└───────────────────┘     │ • Async parallel  │
-                          └─────────┬─────────┘
-                                    │
-                                    ▼
-                          ┌───────────────────┐
-                          │   codex exec      │
-                          │ --sandbox         │
-                          │ workspace-write   │
-                          └───────────────────┘
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│core/discovery │ │ core/commands │ │ core/runner   │
+│               │ │               │ │               │
+│• Agent source │ │• Cmd discovery│ │• Sandbox setup│
+│• Priority     │ │• Namespaces   │ │• Cred sync    │
+│• Plugin parse │ │• Interpolation│ │• Codex exec   │
+│• Frontmatter  │ │• Frontmatter  │ │• JSONL stream │
+└───────────────┘ └───────────────┘ │• Async parallel│
+                                    └───────┬───────┘
+                                            │
+                                            ▼
+                                  ┌───────────────────┐
+                                  │   codex exec      │
+                                  │ --sandbox         │
+                                  │ workspace-write   │
+                                  └───────────────────┘
 ```
 
 ### Package Structure
@@ -383,19 +596,23 @@ subspace-agent/
     ├── __main__.py             # python -m subspace
     ├── cli.py                  # CLI router, subcommand handlers
     └── core/
+        ├── commands.py         # Slash command discovery & loading
         ├── discovery.py        # Multi-source agent discovery
         └── runner.py           # Execution, streaming, parallel
 ```
 
-### Credential Sync
+### Credential & Config Sync
 
-For sandbox mode, credentials are synced to workspace:
+For sandbox mode, credentials and config are synced to workspace:
 
 ```
 ~/.codex/                    .subspace/codex-subagent/
 ├── config.toml  ────────►   ├── config.toml
-└── auth.json    ────────►   └── auth.json
+├── auth.json    ────────►   ├── auth.json
+└── AGENTS.md    ────────►   └── AGENTS.md
 ```
+
+The `AGENTS.md` sync ensures subagents know how to use slash commands and other Subspace features.
 
 Security: Symlinks are rejected to prevent symlink attacks.
 
@@ -594,9 +811,13 @@ Shows: version, discovery, agent loading, credential sync, command, payload size
 |------|---------|
 | `subspace-agent/` | Installable Python package |
 | `subspace-agent/src/subspace/cli.py` | CLI router, handlers, setup command |
+| `subspace-agent/src/subspace/core/commands.py` | Slash command discovery & loading |
 | `subspace-agent/src/subspace/core/discovery.py` | Multi-source agent discovery |
 | `subspace-agent/src/subspace/core/runner.py` | Execution and streaming |
 | `~/.claude/agents/*.md` | User agent definitions |
+| `~/.claude/commands/*.md` | User slash commands |
+| `~/.claude/commands/*/` | Namespaced command directories |
+| `~/.codex/prompts/*.md` | User slash commands (Codex) |
 | `~/.codex/AGENTS.md` | Codex integration (installed via `subspace setup`) |
 | `.subspace/codex-subagent/` | Credential sync (gitignored) |
 
